@@ -1,0 +1,128 @@
+#!/usr/bin/env python2
+
+########
+# Name: interaction_manager.py
+#
+# Purpose: Manages user interaction with the robot, including speech input and visual feedback.
+#
+# Usage: Initialize this class and use the event_callback method to handle robot events.
+#
+# Author: Pragna Guntupalli <sguntupalli@ucsd.edu>, Pranav Reddy Bussannagari <pbussannagari@ucsd.edu>
+#
+# Acknowledgements: ROS 1 tutorials, documentation, and the OpenCV library were instrumental in developing this module.
+#
+# Date: 07 June 2026
+########
+
+import os
+import subprocess
+
+import cv2
+import numpy
+import rospy
+import yaml
+from std_msgs.msg import String
+
+
+SCREEN_WIDTH = 1366
+SCREEN_HEIGHT = 768
+DISPLAY_WINDOW = "Bearledict"
+PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ROBOT_EVENT_TOPIC = "/robot_event"
+AUDIO_PLAYER_CMD = "mpg123"
+
+
+class InteractionManager(object):
+    def __init__(self):
+        self.audio_dir = os.path.join(PACKAGE_ROOT, "audio")
+        self.image_dir = os.path.join(PACKAGE_ROOT, "images")
+        config_path = os.path.join(PACKAGE_ROOT, "config", "phrases.yaml")
+
+        with open(config_path, "r") as f:
+            self.phrases = yaml.safe_load(f) or {}
+
+        self.audio_player_cmd = AUDIO_PLAYER_CMD
+
+        cv2.namedWindow(DISPLAY_WINDOW, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(
+            DISPLAY_WINDOW,
+            cv2.WND_PROP_FULLSCREEN,
+            cv2.WINDOW_FULLSCREEN
+        )
+
+        rospy.Subscriber(
+            ROBOT_EVENT_TOPIC,
+            String,
+            self.event_callback
+        )
+
+        rospy.loginfo("Interaction Manager Ready")
+
+    def event_callback(self, msg):
+        event = msg.data.strip()
+        rospy.loginfo("Received event: {}".format(event))
+        self.play_phrase(event)
+
+    def play_phrase(self, phrase_name):
+        if phrase_name not in self.phrases:
+            rospy.logwarn("Unknown phrase {}".format(phrase_name))
+            return
+
+        phrase = self.phrases[phrase_name] or {}
+        image_file = phrase.get("image")
+        audio_file = phrase.get("audio")
+
+        if image_file:
+            self.show_image(image_file)
+        if audio_file:
+            self.play_audio(audio_file)
+
+    def play_audio(self, audio_file):
+        audio_path = os.path.join(self.audio_dir, audio_file)
+        if not os.path.exists(audio_path):
+            rospy.logwarn("Could not load audio: {}".format(audio_path))
+            return
+
+        rospy.loginfo("Playing {}".format(audio_file))
+        subprocess.call([self.audio_player_cmd, audio_path])
+
+    def show_image(self, image_file):
+        image_path = os.path.join(self.image_dir, image_file)
+        rospy.loginfo("Displaying {}".format(image_file))
+
+        image = cv2.imread(image_path)
+        if image is None:
+            rospy.logwarn("Could not load image: {}".format(image_path))
+            return
+
+        display_image = self.scale_image_to_display(image)
+        cv2.imshow(DISPLAY_WINDOW, display_image)
+        cv2.waitKey(1)
+
+    def scale_image_to_display(self, image):
+        height, width = image.shape[:2]
+
+        scale = min(
+            float(SCREEN_WIDTH) / float(width),
+            float(SCREEN_HEIGHT) / float(height)
+        )
+
+        new_width = int(width * scale)
+        new_height = int(height * scale)
+
+        resized = cv2.resize(image, (new_width, new_height))
+        screen = numpy.zeros((SCREEN_HEIGHT, SCREEN_WIDTH, 3), dtype=numpy.uint8)
+
+        x = (SCREEN_WIDTH - new_width) // 2
+        y = (SCREEN_HEIGHT - new_height) // 2
+
+        screen[y:y + new_height, x:x + new_width] = resized
+        return screen
+
+    def run(self):
+        rospy.spin()
+
+
+if __name__ == "__main__":
+    rospy.init_node("interaction_manager")
+    InteractionManager().run()

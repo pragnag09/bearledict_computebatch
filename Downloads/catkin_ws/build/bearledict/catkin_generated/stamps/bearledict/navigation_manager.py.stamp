@@ -1,0 +1,166 @@
+#!/usr/bin/env python
+
+########
+# Name: navigation_manager.py
+#
+# Purpose: Navigation Manager for controlling turtlebot movement based on AprilTag and obstacle detection.
+#
+# Usage: UNKNOWN - After conpling and sourcing the ~/ros_ws/install/setup.bash , launch the service like this: ros run go_pupper_srv service
+#
+# Author: Anika Dontu <adontu@ucsd.edu>
+#
+# Acknowledgements: Used Dr. Laurel Riek's code service_go_pupper.py as 
+# a base reference for setting up the file and as a guide on how to write the movement methods.
+#
+# Date: 07 June 2026
+#
+# Prof. Riek notes: This file is sending and receiving insturctions from robot_controller
+#
+########
+
+import rospy
+from std_msgs.msg import String
+
+# The Twist package is what we use to move the robot
+from geometry_msgs.msg import Twist
+
+# To let us set timers
+import time
+
+####
+# Name: NavigationManager
+#
+# Purpose: "Navigation Manager class contains the methods for controlling turtlebot movement based on AprilTag and obstacle detection."
+#
+####
+class NavigationManager:
+
+    # Constructor
+    def __init__(self, april=None):
+        self.april = april # april_manager object
+        self.destination = None   # where we're going
+        self.current_tag = None   # where we are now
+        
+        # SUBSCRIBER - receives tag_id from robot_controller
+        self.sub = rospy.Subscriber('/navigation_request', String, self.navigation_callback)
+        
+        # PUBLISHER - sends status back to robot_controller
+        self.status_pub = rospy.Publisher('/navigation_status', String, queue_size=10)
+        
+        # PUBLISHER - sends movement commands to robot
+        self.vel_publisher_ = rospy.Publisher('/mobile_base/commands/velocity', Twist, queue_size=10)
+        
+        # timer interval
+        self.interval = 0.5
+
+    # These are the methods of movement we added to this file to be used in navigation_callback (which will handle the logic of which movement to execute)
+
+    def stop_robot(self):
+        velocity_cmd = Twist()
+        velocity_cmd.linear.x  = 0.0
+        velocity_cmd.angular.z = 0.0
+        self.vel_publisher_.publish(velocity_cmd)
+        rospy.loginfo('stop_robot')
+
+    def move_forward(self):
+        velocity_cmd = Twist()
+        velocity_cmd.linear.x  = 0.5
+        velocity_cmd.angular.z = 0.0
+        self.vel_publisher_.publish(velocity_cmd)
+        rospy.loginfo('move_forward')
+        time.sleep(self.interval)
+
+    def turn_right(self):
+        velocity_cmd = Twist()
+        velocity_cmd.linear.x  = 0.0
+        velocity_cmd.angular.z = -1.0
+        self.vel_publisher_.publish(velocity_cmd)
+        rospy.loginfo('turn_right')
+        time.sleep(self.interval)
+
+    def turn_left(self):
+        velocity_cmd = Twist()
+        velocity_cmd.linear.x  = 0.0
+        velocity_cmd.angular.z = 1.0
+        self.vel_publisher_.publish(velocity_cmd)
+        rospy.loginfo('turn_left')
+        time.sleep(self.interval)
+
+    def turn_around(self):
+        velocity_cmd = Twist()
+        velocity_cmd.linear.x = 0.5
+        time.sleep(2.0)
+        velocity_cmd.linear.x  = 0.0
+        velocity_cmd.angular.z = 10.5 # this is the angle
+        self.vel_publisher_.publish(velocity_cmd)
+        rospy.loginfo('turn_around')
+        time.sleep(3.14)  # ~180 degrees for the amount of time
+        self.stop_robot()
+
+    # check if obstacle is removed and until then we keepthe robot stopped
+    def obstacle(self):
+        self.stop_robot()
+        time.sleep(5) # wait for 5 seconds before checking again
+
+    def set_destination(self, tag_id):
+        self.destination = tag_id
+        rospy.loginfo("New navigation destination: %d" % self.destination)
+
+    #####
+    # Name: navigation_callback
+    # Purpose: This will receive navigation messages from robot_controller. It will use this information to move the turtlebot and publish accordingly.
+    # Arguments: self (obj), msg (command published from robot_controller)
+    #####
+    def navigation_callback(self, msg):
+        self.set_destination(int(msg.data))
+
+    def update(self):
+
+        #time.sleep(10) #buffer between listening and navigation state
+        
+        if self.destination is None:
+            return
+
+        if self.april is None:
+            rospy.logwarn("No AprilTag manager available")
+            return
+
+        self.current_tag = self.april.get_current_tag()
+
+        if self.current_tag == self.destination:
+            self.stop_robot()
+
+            if self.destination == 0:
+                self.status_pub.publish("home_reached")
+            else:
+                self.turn_around()
+                self.status_pub.publish("arrived")
+
+            self.destination = None
+            return
+
+        if self.current_tag == 5:
+            self.obstacle()
+            self.status_pub.publish("obstacle")
+            return
+
+        if self.current_tag == 4 and self.destination != 4:
+            self.turn_around()
+            self.move_forward()
+            self.status_pub.publish("turned_around")
+            return
+
+        self.move_forward()
+
+
+####
+# Name: Main
+# Purpose: Main function to set up our subscriber/publisher and navigaiton_manager node
+#####
+def main():
+    rospy.init_node("navigation_manager")
+    nav = NavigationManager()
+    rospy.spin()
+
+if __name__ == '__main__':
+    main()

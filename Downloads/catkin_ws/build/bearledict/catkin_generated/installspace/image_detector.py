@@ -1,0 +1,85 @@
+#!/usr/bin/env python2
+
+import numpy as np
+import rospy
+from sensor_msgs.msg import Image
+import cv2
+from cv_bridge import CvBridge
+
+"""
+Code from CSE190 Lab1/Task5.3 `echo_camera.py` and `blob_detection.py` adapted from ROS2 into ROS1.
+"""
+
+# Creating a class for the echo camera node. Note that this class inherits from the Node class.
+class echo_camera:
+    def __init__(self):
+        #Initializing a node with the name 'echo_camera'
+        # ROS2: super().__init__('echo_camera')
+        rospy.init_node('echo_camera', anonymous=True)
+        
+        #Subscribing to the /usb_cam/image_raw topic that carries data of Image type
+        # ROS2: self.subscription = self.create_subscription(Image, '/oak/rgb/image_raw', self.echo_topic, 10)
+        self.subscription = rospy.Subscriber('/usb_cam/image_raw', Image, self.echo_topic, queue_size=10)
+        self.subscription #this is just to remove unused variable warnings
+        
+        #CvBridge has functions that allow you to convert ROS Image type data into OpenCV images
+        self.br = CvBridge()
+
+        # COLOR DETECTION HSV VALUES FOR NEON GREEN SHIRT
+        self.hsv_lower = [20, 10, 10] 
+        self.hsv_upper = [100, 255, 255]
+    
+    # Callback function to echo the video frame being received  
+    def echo_topic(self, data):
+        #Logging a message - helps with debugging later on
+        #ROS2: self.get_logger().info('Receiving video frame')
+        rospy.loginfo('Receiving video frame')
+        
+        #Using the CvBridge function imgmsg_to_cv to convert ROS Image to OpenCV image. Now you can use this image to do other OpenCV things
+        current_frame = self.br.imgmsg_to_cv2(data, desired_encoding='bgr8')
+
+        # convert the current frame from RGB to HSV
+        hsv = cv2.cvtColor(current_frame, cv2.COLOR_BGR2HSV)
+
+        # create numpy arrays from the boundaries
+        lower = np.array(self.hsv_lower)
+        upper = np.array(self.hsv_upper)
+
+        # find all pixels in the color range you want in the frame
+        mask = cv2.inRange(hsv, lower, upper)
+
+        # mask out all other colors
+        masked_frame = cv2.bitwise_and(current_frame, current_frame, mask = mask)
+
+        # use imshow to display image frame currently being published
+        img_window_name = "color detected"
+        cv2.namedWindow(img_window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(img_window_name, 800, 400)
+        cv2.imshow(img_window_name, np.hstack([current_frame, masked_frame]))
+        
+        #Using the imshow function to echo display the image frame currrently being published by the OAK-D
+        # cv2.imshow("camera", current_frame)
+
+        #This shows each image frame for 1 millisecond, try playing around with different wait values to achieve the video framerate you want!
+        cv2.waitKey(1)
+
+# Main function         
+def main(args=None):
+    # # Initializing rclpy (ROS Client Library for Python)
+    # rclpy.init(args=args)
+    
+    # #Create an object of the echo_camera class
+    echo_obj = echo_camera()
+    
+    # #Keep going till termination
+    # ROS2: rclpy.spin(echo_obj)
+    rospy.spin()
+
+    # #Destroy node when done 
+    # echo_obj.destroy_node()
+
+    # #Shutdown rclpy
+    # rclpy.shutdown()
+    
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,127 @@
+#!/usr/bin/env python
+
+import cv2
+import numpy as np
+import rospy
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
+from std_srvs.srv import Trigger, TriggerResponse
+
+
+CONFIRMATION_SECONDS = 5.0
+MIN_GREEN_AREA = 10
+DEBUG_VIEW = True
+
+"""
+Code from CSE190 Lab1/Task5.3 `echo_camera.py` and `blob_detection.py`
+adapted from ROS2 into ROS1.
+"""
+
+class PersonDetector(object):
+    def __init__(self):
+        rospy.init_node("person_detector", anonymous=True)
+
+        self.bridge = CvBridge()
+
+        self.confirmation_seconds = CONFIRMATION_SECONDS
+        self.min_green_area = MIN_GREEN_AREA
+        self.debug_view = DEBUG_VIEW
+
+        hsv_lower = [35, 60, 30]
+        hsv_upper = [75, 255, 255]
+
+        self.hsv_lower = np.array(hsv_lower, dtype=np.uint8)
+        self.hsv_upper = np.array(hsv_upper, dtype=np.uint8)
+
+        self.last_green_area = 0
+        self.detection_start_time = None
+        self.person_detected = False
+
+        rospy.Subscriber(
+            "/usb_cam/image_raw",
+            Image,
+            self.image_callback,
+            queue_size=10
+        )
+
+        rospy.Service(
+            "/detect_person",
+            Trigger,
+            self.detect_person_callback
+        )
+
+        rospy.loginfo("Person detector ready on {}".format("/detect_person"))
+
+    def image_callback(self, data):
+        current_frame = self.bridge.imgmsg_to_cv2(data, desired_encoding="bgr8")
+        hsv = cv2.cvtColor(current_frame, cv2.COLOR_BGR2HSV)
+
+        mask = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
+
+        kernel = np.ones((5,5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+        self.last_green_area = cv2.countNonZero(mask)
+
+        currently_detected = self.last_green_area >= self.min_green_area
+        now = rospy.Time.now()
+
+        if currently_detected:
+            if self.detection_start_time is None:
+                self.detection_start_time = now
+
+            elapsed = (now - self.detection_start_time).to_sec()
+            self.person_detected = elapsed > self.confirmation_seconds
+        else:
+            self.detection_start_time = None
+            self.person_detected = False
+
+        if self.debug_view:
+            self.show_debug_view(current_frame, mask)
+
+    def detect_person_callback(self, request):
+        elapsed = self.get_detection_elapsed()
+        confirmed = self.person_detected or (
+            self.detection_start_time is not None
+            and elapsed > self.confirmation_seconds
+        )
+
+        if confirmed:
+            message = "person confirmed for %.1f seconds; green area=%d" % (
+                elapsed,
+                self.last_green_area
+            )
+            return TriggerResponse(True, message)
+
+        message = "person not confirmed; elapsed=%.1f seconds; green area=%d" % (
+            elapsed,
+            self.last_green_area
+        )
+        return TriggerResponse(False, message)
+
+    def get_detection_elapsed(self):
+        if self.detection_start_time is None:
+            return 0.0
+
+        return (rospy.Time.now() - self.detection_start_time).to_sec()
+
+    def show_debug_view(self, current_frame, mask):
+        masked_frame = cv2.bitwise_and(current_frame, current_frame, mask=mask)
+        window_name = "color detected"
+
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, 800, 400)
+        cv2.imshow(window_name, np.hstack([current_frame, masked_frame]))
+        cv2.waitKey(1)
+
+    def run(self):
+        rospy.spin()
+
+
+def main():
+    PersonDetector().run()
+
+
+if __name__ == "__main__":
+    main()

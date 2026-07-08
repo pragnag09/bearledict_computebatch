@@ -1,0 +1,87 @@
+#!/usr/bin/env python
+
+########
+# Name: destination_resolver.py
+#
+# Purpose: Resolves destination names to their corresponding tag IDs.
+#
+# Usage: Initialize this class and use the find_destination method to get the standardized destination name from user input, and the get_tag method to retrieve the corresponding tag ID for navigation.
+#
+# Author: Pragna Guntupalli <sguntupalli@ucsd.edu>, Pranav Reddy Bussannagari <pbussannagari@ucsd.edu>
+#
+# Acknowledgements: ROS 1 tutorials, documentation, and the difflib library were instrumental in developing this module.
+# Date: 07 June 2026
+########
+
+import os
+from difflib import SequenceMatcher
+
+import yaml
+
+PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+def normalize_text(text):
+    return str(text or "").lower().strip()
+
+def similarity_score(left, right):
+    return int(SequenceMatcher(None, left, right).ratio() * 100)
+
+class DestinationResolver(object):
+    def __init__(self, config_path=None, match_threshold=75):
+        if config_path is None:
+            config_path = os.path.join(
+                PACKAGE_ROOT,
+                "config",
+                "destinations.yaml"
+            )
+
+        self.match_threshold = match_threshold
+        with open(config_path, "r") as f:
+            self.destinations = yaml.safe_load(f) or {}
+
+        self.search_index = {}
+        self._build_index()
+
+    def _build_index(self):
+        for location, data in self.destinations.items():
+            self.search_index[normalize_text(location.replace("_", " "))] = location
+
+            aliases = data.get("aliases", [])
+            for alias in aliases:
+                self.search_index[normalize_text(alias)] = location
+
+    def find_destination(self, text):
+        text = normalize_text(text)
+        if not text:
+            return None
+
+        for alias, location in self.search_index.items():
+            if alias and alias in text:
+                return location
+
+        best_alias = None
+        best_score = 0
+        for alias in self.search_index:
+            score = similarity_score(text, alias)
+            if score > best_score:
+                best_alias = alias
+                best_score = score
+
+        if best_alias is not None and best_score >= self.match_threshold:
+            return self.search_index[best_alias]
+
+        return None
+
+    def get_tag(self, destination):
+        if destination not in self.destinations:
+            return None
+
+        return self.destinations[destination].get("tag_id")
+
+
+if __name__ == "__main__":
+    resolver = DestinationResolver()
+    while True:
+        text = raw_input("Destination query: ")
+        destination = resolver.find_destination(text)
+        print("{} -> {} -> {}".format(text, destination, resolver.get_tag(destination)))

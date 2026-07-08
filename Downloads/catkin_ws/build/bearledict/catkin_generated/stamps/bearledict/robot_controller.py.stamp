@@ -1,0 +1,197 @@
+#!/usr/bin/env python
+
+########
+# Name: robot_controller.py
+#
+# Purpose: The central coordinator for the robot's behavior. It manages the robot's state, processes speech input, handles navigation requests, and coordinates interactions with other components like the AprilTag manager and fun fact manager.
+# Usage: Run this node to start the robot's main control loop. It will listen for speech input, manage navigation, and handle interactions based on the robot's state.
+#
+# Authors: Pragna Guntupalli <sguntupalli@ucsd.edu>, Anika Dontu <adontu@ucsd.edu>, Pranav Reddy Bussannagari <pbussannagari@ucsd.edu>, Faizan Niazi <fniazi@ucsd.edu>
+#
+# Acknowledgements: ROS 1 tutorials and the speech_recognition library documentation were instrumental in developing this module.
+#
+# Date: 07 June 2026
+########
+
+import time
+
+import rospy
+from std_msgs.msg import String
+from std_srvs.srv import Trigger
+
+from apriltag_manager import AprilTagManager
+from destination_resolver import DestinationResolver
+from funfact_manager import FunFactManager
+from navigation_manager import NavigationManager
+from speech_manager import SpeechManager
+
+
+FUN_FACT_INTERVAL = 20
+FOLLOWUP_TIMEOUT = 15
+
+class RobotState(object):
+    IDLE = 0
+    LISTENING = 1
+    # THINKING = 2
+    NAVIGATING = 3
+    # ARRIVED = 4
+    WAITING_FOR_FOLLOWUP = 5
+    RETURNING_HOME = 6
+
+
+class RobotController(object):
+    def __init__(self):
+        self.state = RobotState.IDLE
+        self.speech = SpeechManager()
+        self.april = AprilTagManager()
+        self.resolver = DestinationResolver()
+        self.navigation = NavigationManager(self.april)
+        self.facts = FunFactManager()
+
+        self.event_pub = rospy.Publisher(
+            "/robot_event",
+            String,
+            queue_size=10
+        )
+        self.navigation_request_pub = rospy.Publisher(
+            "/navigation_request",
+            String,
+            queue_size=10
+        )
+        rospy.Subscriber(
+            "/navigation_status",
+            String,
+            self.navigation_callback
+        )
+
+        self.detect_person_service = "/detect_person" #topic for human detection
+
+        self.last_fact_time = time.time()
+        self.arrival_time = None
+
+    def navigation_callback(self, msg):
+        status = msg.data.lower().strip()
+
+        if status == "arrived":
+            self.event_pub.publish("arrival")
+            self.arrival_time = time.time()
+            self.state = RobotState.WAITING_FOR_FOLLOWUP
+
+        elif status == "obstacle":
+            rospy.loginfo("Obstacle detected")
+
+        elif status == "home_reached":
+            rospy.loginfo("Returned home")
+            self.state = RobotState.IDLE
+
+        elif status == "turned_around":
+            rospy.loginfo("Turned around since end reached")
+
+    def handle_listening(self):
+        text = self.speech.listen()
+        rospy.loginfo("HEARD: '{}'".format(text))
+        intent = self.speech.extract_intent(text)
+        rospy.loginfo("INTENT: '{}'".format(text))
+
+        if intent == "goodbye":
+            self.event_pub.publish("goodbye")
+            self.state = RobotState.IDLE
+            return
+
+        if intent != "room_query":
+            self.event_pub.publish("unknown")
+            return
+
+        target = self.speech.extract_target(text)
+        destination = self.resolver.find_destination(target)
+
+        if destination is None:
+            self.event_pub.publish("invalid_loc")
+            return
+
+        tag_id = self.resolver.get_tag(destination)
+        if tag_id is None:
+            self.event_pub.publish("invalid_loc")
+            return
+
+        self.event_pub.publish("navigate")
+        self.navigation_request_pub.publish(str(tag_id))
+        self.last_fact_time = time.time()
+        self.state = RobotState.NAVIGATING
+
+    def handle_funfact(self):
+        now = time.time()
+        if now - self.last_fact_time >= FUN_FACT_INTERVAL:
+            self.event_pub.publish(self.facts.get_random_event())
+            self.last_fact_time = now
+
+    def handle_followup(self):
+        text = self.speech.listen(timeout_secs=FOLLOWUP_TIMEOUT)
+        intent = self.speech.extract_intent(text)
+
+        if intent == "room_query":
+            target = self.speech.extract_target(text)
+            destination = self.resolver.find_destination(target)
+            if destination is None:
+                self.event_pub.publish("invalid_loc")
+                return
+            tag_id = self.resolver.get_tag(destination)
+
+            if tag_id is not None:
+                self.navigation_request_pub.publish(str(tag_id))
+                self.event_pub.publish("navigate")
+                self.last_fact_time = time.time()
+                self.state = RobotState.NAVIGATING
+                return
+
+            self.event_pub.publish("invalid_loc")
+            return
+
+        self.event_pub.publish("goodbye")
+        self.navigation_request_pub.publish("0")
+        self.state = RobotState.RETURNING_HOME
+
+    def person_detected(self):
+        try:
+            rospy.wait_for_service(self.detect_person_service, timeout=0.2)
+            detect_person = rospy.ServiceProxy(self.detect_person_service, Trigger)
+            resp = detect_person()
+            return resp.success
+        except rospy.ROSException:
+            return False
+        except rospy.ServiceException as e:
+            rospy.logwarn("Person detection service failed: {}".format(e))
+            return False
+
+
+    def run(self):
+        rate = rospy.Rate(10)
+
+        while not rospy.is_shutdown():
+            if self.state == RobotState.IDLE:
+                if self.person_detected():
+                    self.navigation.move_forward()
+                    self.event_pub.publish("greeting")
+                    self.state = RobotState.LISTENING
+
+            elif self.state == RobotState.LISTENING:
+                self.handle_listening()
+                rospy.sleep(5.0)
+
+            elif self.state == RobotState.NAVIGATING:
+                self.navigation.update()
+                self.handle_funfact()
+
+            elif self.state == RobotState.WAITING_FOR_FOLLOWUP:
+                self.handle_followup()
+
+            elif self.state == RobotState.RETURNING_HOME:
+                self.navigation.update()
+                rospy.sleep(5.0)
+
+            rate.sleep()
+
+
+if __name__ == "__main__":
+    rospy.init_node("bearledict_controller")
+    RobotController().run()
